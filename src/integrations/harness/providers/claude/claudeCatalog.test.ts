@@ -20,6 +20,7 @@ const ROWS: Record<string, unknown[]> = {
       resolvedModel: "gateway/claude-opus-5-5",
     },
   ],
+  broken: [],
 };
 
 vi.mock("../../core/child", () => ({
@@ -131,6 +132,42 @@ describe("claude per-account catalog", () => {
     release();
     await slow;
     await vi.waitFor(() => expect(models.hasLiveCatalog("claude")).toBe(true));
-    expect(seen).toEqual([["claude-opus-4-8", "claude-sonnet-4-6"]]);
+    // Aliases while default probes; the gateway's ["opus"] never appears.
+    expect(seen).toEqual([
+      ["opus", "sonnet", "haiku"],
+      ["claude-opus-4-8", "claude-sonnet-4-6"],
+    ]);
+  });
+
+  it("shows only alias rows for an uncached account while its probe runs", async () => {
+    const { catalog, models } = await load();
+    await catalog.refreshClaudeCatalog();
+    expect(ids(models.modelsFor("claude"))).toContain("claude-opus-4-8");
+
+    let release!: () => void;
+    gate = new Promise((resolve) => (release = resolve));
+    catalog.selectClaudeCatalogAccount("gateway");
+    expect(ids(models.modelsFor("claude"))).toEqual([
+      "opus",
+      "sonnet",
+      "haiku",
+    ]);
+    release();
+    await vi.waitFor(() =>
+      expect(ids(models.modelsFor("claude"))).toEqual(["opus"]),
+    );
+  });
+
+  it("does not cache the version fallback, so the account is probed again", async () => {
+    const { catalog } = await load();
+    catalog.selectClaudeCatalogAccount("broken");
+    await catalog.refreshClaudeCatalog();
+    expect(spawnedAccounts).toHaveLength(1);
+
+    catalog.selectClaudeCatalogAccount("default");
+    await catalog.refreshClaudeCatalog();
+    catalog.selectClaudeCatalogAccount("broken");
+    await catalog.refreshClaudeCatalog();
+    expect(spawnedAccounts.filter((a) => a?.id === "broken")).toHaveLength(2);
   });
 });

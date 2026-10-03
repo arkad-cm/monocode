@@ -1,6 +1,7 @@
 import { DEFAULT_PROVIDER_ACCOUNT_ID } from "../../../../features/providers/model/providerAccounts";
 import { homeDir } from "../../../../platform/tauri/fs";
 import {
+  hasLiveCatalog,
   setHarnessModels,
   type AgentModel,
   type ModelSetting,
@@ -229,7 +230,21 @@ export function selectClaudeCatalogAccount(accountId: string): void {
   selectedAccount = accountId;
   const cached = accountModels.get(accountId);
   if (cached) setHarnessModels("claude", cached);
-  else void refreshClaudeCatalog(accountId);
+  else {
+    // Aliases resolve through the account's own Claude Code settings, so they
+    // are safe to show until this account's probe returns (or if it fails).
+    setHarnessModels("claude", aliasModels());
+    void refreshClaudeCatalog(accountId);
+  }
+}
+
+function aliasModels(): AgentModel[] {
+  return modelsFromClaudeListModels(
+    ["opus", "sonnet", "haiku"].map((value) => ({
+      value,
+      displayName: value[0]?.toUpperCase() + value.slice(1),
+    })),
+  );
 }
 
 export function refreshClaudeCatalog(
@@ -237,10 +252,13 @@ export function refreshClaudeCatalog(
 ): Promise<void> {
   const running = inflight.get(accountId);
   if (running) return running;
-  const probe = discoverClaudeModels(undefined, accountId)
-    .then((models) => {
+  const probe = discoverClaudeModelsWithSource(undefined, accountId)
+    .then(({ models, fromListModels }) => {
       if (models.length === 0) return;
-      accountModels.set(accountId, models);
+      // Version-based fallback ids are not this account's list: never cache
+      // them, so the account is probed again the next time it is selected.
+      if (fromListModels) accountModels.set(accountId, models);
+      else if (hasLiveCatalog("claude")) return;
       // A slow probe for an account the user already left stays cached only.
       if (accountId === selectedAccount) setHarnessModels("claude", models);
     })
@@ -258,14 +276,25 @@ export async function discoverClaudeModels(
   workingDirectory?: string,
   accountId?: string,
 ): Promise<AgentModel[]> {
+  return (await discoverClaudeModelsWithSource(workingDirectory, accountId))
+    .models;
+}
+
+async function discoverClaudeModelsWithSource(
+  workingDirectory?: string,
+  accountId?: string,
+): Promise<{ models: AgentModel[]; fromListModels: boolean }> {
   const listed = await discoverViaListModels(workingDirectory, accountId).catch(
     (error: unknown) => {
       console.debug("[monocode] claude list_models catalog failed", error);
       return [];
     },
   );
-  if (listed.length > 0) return listed;
-  return discoverViaVersion(workingDirectory);
+  if (listed.length > 0) return { models: listed, fromListModels: true };
+  return {
+    models: await discoverViaVersion(workingDirectory),
+    fromListModels: false,
+  };
 }
 
 async function discoverViaListModels(
