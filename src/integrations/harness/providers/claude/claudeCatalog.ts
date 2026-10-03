@@ -1,3 +1,4 @@
+import { DEFAULT_PROVIDER_ACCOUNT_ID } from "../../../../features/providers/model/providerAccounts";
 import { homeDir } from "../../../../platform/tauri/fs";
 import {
   setHarnessModels,
@@ -216,27 +217,48 @@ const EFFORT_LABELS: Record<string, string> = {
   max: "Max",
 };
 
-let inflight: Promise<void> | null = null;
+// `list_models` depends on the account's profile (a gateway profile advertises
+// different models), so each account keeps its own list and probe.
+let selectedAccount = DEFAULT_PROVIDER_ACCOUNT_ID;
+const accountModels = new Map<string, AgentModel[]>();
+const inflight = new Map<string, Promise<void>>();
 
-export function refreshClaudeCatalog(): Promise<void> {
-  if (inflight) return inflight;
-  inflight = discoverClaudeModels()
+/** Show the selected account's models, probing only if none are cached yet. */
+export function selectClaudeCatalogAccount(accountId: string): void {
+  if (accountId === selectedAccount) return;
+  selectedAccount = accountId;
+  const cached = accountModels.get(accountId);
+  if (cached) setHarnessModels("claude", cached);
+  else void refreshClaudeCatalog(accountId);
+}
+
+export function refreshClaudeCatalog(
+  accountId: string = selectedAccount,
+): Promise<void> {
+  const running = inflight.get(accountId);
+  if (running) return running;
+  const probe = discoverClaudeModels(undefined, accountId)
     .then((models) => {
-      if (models.length > 0) setHarnessModels("claude", models);
+      if (models.length === 0) return;
+      accountModels.set(accountId, models);
+      // A slow probe for an account the user already left stays cached only.
+      if (accountId === selectedAccount) setHarnessModels("claude", models);
     })
     .catch((error: unknown) => {
       console.debug("[monocode] claude catalog", error);
     })
     .finally(() => {
-      inflight = null;
+      inflight.delete(accountId);
     });
-  return inflight;
+  inflight.set(accountId, probe);
+  return probe;
 }
 
 export async function discoverClaudeModels(
   workingDirectory?: string,
+  accountId?: string,
 ): Promise<AgentModel[]> {
-  const listed = await discoverViaListModels(workingDirectory).catch(
+  const listed = await discoverViaListModels(workingDirectory, accountId).catch(
     (error: unknown) => {
       console.debug("[monocode] claude list_models catalog failed", error);
       return [];
@@ -248,6 +270,7 @@ export async function discoverClaudeModels(
 
 async function discoverViaListModels(
   workingDirectory?: string,
+  accountId?: string,
 ): Promise<AgentModel[]> {
   const { path } = await resolveClaudeBinary();
   const cwd = workingDirectory ?? (await homeDir());
@@ -300,7 +323,7 @@ async function discoverViaListModels(
       path,
       buildClaudeSpawnArgs({ isolated: true, sessionId }),
       cwd,
-      undefined,
+      { provider: "claude", id: accountId ?? DEFAULT_PROVIDER_ACCOUNT_ID },
       "claude",
     );
     await writeChild(
