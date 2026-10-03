@@ -167,7 +167,8 @@ describe("claude per-account catalog", () => {
     catalog.selectClaudeCatalogAccount("default");
     await catalog.refreshClaudeCatalog();
     catalog.selectClaudeCatalogAccount("broken");
-    await catalog.refreshClaudeCatalog();
-    expect(spawnedAccounts.filter((a) => a?.id === "broken")).toHaveLength(2);
+    await vi.waitFor(() =>
+      expect(spawnedAccounts.filter((a) => a?.id === "broken")).toHaveLength(2),
+    );
   });
 });
